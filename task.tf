@@ -4,38 +4,37 @@ provider "aws" {
 }
 
 #Create key pair
-resource "tls_private_key" "mykeytask3"{
-    algorithm = "RSA"
+resource "tls_private_key" "mykeytask"{
+	algorithm = "RSA"
 }
 
 #create key-pair/aws
 module "key_pair" {
 	source = "terraform-aws-modules/key-pair/aws"
-	key_name = "mykeytask3"
-	public_key = tls_private_key.mykeytask3.public_key_openssh
+	key_name = "mykeytask"
+	public_key = tls_private_key.mykeytask.public_key_openssh
 } 
 
-#create VPC
 resource "aws_vpc" "myvpc" {
-  cidr_block       = "10.0.0.0/16"
-  instance_tenancy = "default"
+	cidr_block       = "10.0.0.0/16"
+	instance_tenancy = "default"
 
-  tags = {
+	tags = {
     Name = "myvpc"
-  }
+	}
 }
 
-#security group for wordpress public
 resource "aws_security_group" "mywordpress" {
     depends_on=[aws_vpc.myvpc]
 	name = "mywordpress"
 	description = "Allow TLS inbound traffic"
 	vpc_id = aws_vpc.myvpc.id
+	
 	egress {
-		from_port = 0
-		to_port = 0
-		protocol = "-1"
-		cidr_blocks = ["0.0.0.0/0"]
+	from_port = 0
+	to_port = 0
+	protocol = "-1"
+	cidr_blocks = ["0.0.0.0/0"]
 	}
 
 	ingress {
@@ -46,18 +45,10 @@ resource "aws_security_group" "mywordpress" {
 	}
 	ingress {
 		cidr_blocks=["0.0.0.0/0"]
-		from_port = -1
-		to_port = -1
-		protocol = "icmp"
-	}
-	
-	
-	ingress {
-		cidr_blocks=["0.0.0.0/0"]
 		from_port = 22
 		to_port = 22
 		protocol = "tcp"
-		}
+	}
 	ingress {
 		cidr_blocks=["0.0.0.0/0"]
 		from_port = 0
@@ -68,6 +59,7 @@ resource "aws_security_group" "mywordpress" {
 		Name = "mywordpresssg"
 	}
 }
+
 
 #private security groupfor mysql
 resource "aws_security_group" "sql" {
@@ -110,9 +102,9 @@ resource "aws_security_group" "sql" {
 	}
 }
 
-#public subnet for wordpress
+
 resource "aws_subnet" "pubsub" {
-  depends_on=[aws_vpc.myvpc]
+   depends_on=[aws_vpc.myvpc]
   vpc_id     = aws_vpc.myvpc.id
   cidr_block = "10.0.1.0/24"
   availability_zone = "ap-south-1a"
@@ -123,8 +115,8 @@ resource "aws_subnet" "pubsub" {
   }
 }
 
-#private subnet for database
 resource "aws_subnet" "prisub" {
+   depends_on=[aws_vpc.myvpc]
    vpc_id     = aws_vpc.myvpc.id
   cidr_block = "10.0.2.0/24"
   availability_zone = "ap-south-1b"
@@ -134,57 +126,96 @@ resource "aws_subnet" "prisub" {
   }
 }
 
-#internet gateway for VPC
 resource "aws_internet_gateway" "gw" {
+ depends_on=[aws_vpc.myvpc]
   vpc_id = aws_vpc.myvpc.id
-  depends_on=[aws_vpc.myvpc]
   tags = {
     Name = "netgateway"
   }
 }
 
-#route table
-resource "aws_route_table" "routetable" {
-  depends_on=[aws_vpc.myvpc,aws_internet_gateway.gw]
+resource "aws_eip" "myEIP" {
+  depends_on = [aws_internet_gateway.gw]
+  vpc      = true
+  tags={
+     Purpose="wordpress"
+	 }
+}
+
+resource "aws_nat_gateway" "natgw" {
+  allocation_id = aws_eip.myEIP.id
+  subnet_id     = aws_subnet.pubsub.id
+  depends_on = [
+  aws_internet_gateway.gw,
+  aws_eip.myEIP
+  ]
+  tags = {
+    Name = "NAT"
+  }
+}
+
+resource "aws_route_table" "pubroutetable" {
+   depends_on=[
+  aws_vpc.myvpc,
+  aws_internet_gateway.gw
+  ]
   vpc_id = aws_vpc.myvpc.id
    route {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.gw.id
-  } 
+  }
+ 
   tags = {
-    Name = "myroute"
+    Name = "mypublicroute"
   }
 }
-#connecting route table to public subnet
-resource "aws_route_table_association" "a" {
-  subnet_id      = aws_subnet.pubsub.id
-  route_table_id = aws_route_table.routetable.id
+resource "aws_route_table" "priroutetable" {
   depends_on=[
-  aws_subnet.pubsub, 
-  aws_route_table.routetable
+  aws_vpc.myvpc,
+  aws_nat_gateway.natgw
   ]
+  vpc_id = aws_vpc.myvpc.id
+   route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_nat_gateway.natgw.id
+  }
+
+   tags = {
+    Name = "myprivateroute"
+  }
 }
 
-#wordpress instance
+resource "aws_route_table_association" "public" {
+  depends_on=[aws_route_table.pubroutetable]
+  subnet_id      = aws_subnet.pubsub.id
+  route_table_id = aws_route_table.pubroutetable.id
+}
+
+resource "aws_route_table_association" "private" {
+ depends_on=[aws_route_table.priroutetable]
+  subnet_id      = aws_subnet.prisub.id
+  route_table_id = aws_route_table.priroutetable.id
+}
+
+
 resource "aws_instance" "wordpress" {
 	ami= "ami-000cbce3e1b899ebd"
 	instance_type= "t2.micro"
-	key_name= "mykeytask3"
+	key_name= "mykeytask"
 	vpc_security_group_ids = [aws_security_group.mywordpress.id]
 	subnet_id = aws_subnet.pubsub.id
-	
+
 	tags = {
 		Name= "wordpress"
 	}
-
 }
 
-#mysql Instance
 resource "aws_instance" "mysql" {
 	ami= "ami-08706cb5f68222d09"
 	instance_type= "t2.micro"
-	key_name= "mykeytask3"
+	key_name= "mykeytask"
 	vpc_security_group_ids = [aws_security_group.sql.id]
+
 	subnet_id = aws_subnet.prisub.id
 
 	tags = {
@@ -193,5 +224,5 @@ resource "aws_instance" "mysql" {
 }
 
 output "myoutsite"{
-	value = aws_instance.wordpress.public_ip
+   value = aws_instance.wordpress.public_ip
 }
